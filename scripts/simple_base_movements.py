@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import math
-import copy
+#import copy
 import numpy as np
 
 import rospy
@@ -33,76 +33,87 @@ class MoveRobot(object):
 
         #self._odom_sub = rospy.Subscriber('/mobile_base_controller/odom', Odometry, self._update_odom)
         # self.event_sub = ...
+    
+    def _input(self, text = ""):
+        ans = raw_input(text)
+        if not ans:
+            if not raw_input('\nAre you sure to quit? \nEmpty string = `Yes, quit.`\nAny letter = `No, go on.`\n'):
+                # Generate an interrupt as Ctrl+C does not seem to work properly with raw_input
+                raise KeyboardInterrupt
+            else:
+                return None
+        else:
+            return ans
 
-    def ask_translation(self):  # Placeholder for the event receival callback
-        self.translation_target = float(raw_input('Enter the linear movement [m]: '))
-        self.forward = self.translation_target >= 0
 
+    def ask_movement(self):    
+        # Ask the type of movement (rotation or translation)
+        mov = None
+        while mov is None:
+            mov = self._input('Enter the movement type: (R)otation or (T)ranslation? ')
+            if mov and mov not in ['R', 'T', 'r', 't']:
+                print('The input should be `R` or `T`, either upper or lower case.')
 
-    def ask_rotation(self):  # Placeholder for the event receival callback
-        self.rotation_target = float(raw_input('Enter the angle [deg]: ')) * math.pi / 180.0
-        self.counterclockwise = self.rotation_target >= 0
+        self.translation = True if mov.upper() == 'T' else False
+        
+        if self.translation:
+            self.translation_target = float(self._input('Enter the linear movement [m]: '))
+        elif not self.translation:
+            self.rotation_target = float(self._input('Enter the angle [deg]: ')) * math.pi / 180.0
+        print("")
 
-    def base_translation(self, translation = True):
+    def move(self):
+        """ Move the robot base. The movement is controlled in open loop, following a trapezoidal velocity profile. The type of movement (translation or rotation) is determined depending on the values of translation_target and rotation_target (i.e. one should be set to None).
+        """
+        target = self.translation_target if self.translation else self.rotation_target
         vel_profile = self._trapezoidal_vel_profile(v_max = self._linear_vel, 
                                                     a_max = self._linear_acc, 
-                                                    s_tot = abs(self.translation_target) 
+                                                    s_tot = abs(target) 
                                                     )
-        if not self.forward:
-            vel_profile *= -1
-        print(vel_profile)
-        for v in vel_profile:
-            self._publish(linear = v)
-            self.rate.sleep()   # keep the loop at the desired frequency
-
-
-    def base_rotation(self):
-        vel_profile = self._trapezoidal_vel_profile(v_max = self._angular_vel, 
-                                                    a_max = self._angular_acc, 
-                                                    s_tot = abs(self.rotation_target)
-                                                    )
-        if not self.counterclockwise:
+        if target <= 0: # if the rotation is clockwise or the translation is backward
+                        # the sign of the velocity has to be inverted
             vel_profile *= -1
         for v in vel_profile:
-            self._publish(angular = v)
+            if self.translation:
+                self._publish(linear = v)
+            elif not self.translation:      # if rotation
+                self._publish(angular = v)
             self.rate.sleep()   # keep the loop at the desired frequency
+
 
     def _trapezoidal_vel_profile(self, v_max, a_max, s_tot):
         """ Generate a trapezoidal velocity profile to control the base movement in feedforward.
-        The initial velocity is assumed to be 0.
+        The initial velocity is assumed to be 0. Only works with positive values. If working with negative values, use the absolute values and change the sign of the return.
 
         Args:
             v_max (float): The maximum velocity. Measurement unit depends on input.
             a_max (float): The maximum acceleration. Measurement unit depends on input.
             s_tot (float): The overall displacement. Measurement unit depends on input.
+        
+        Returns:
+            numpy.ndarray: The velocity values to be sent to the base (assumed to be 1/hz seconds apart).
         """
         # The duration of the acceleration and deceleration phase (and also the time instant at which the peak velocity is reached, assuming 0 at start).
         t_acc = min([math.sqrt(s_tot / a_max),  # if triangular
                      v_max / a_max              # if trapezoidal
                     ])
-        print('Acceleration lasts:\t\t' + str(t_acc))
         # The duration of the constant speed phase. 
         t_vmax = max([0.0,                          # if triangular (i.e. no constant speed phase)
                       s_tot / v_max - v_max / a_max # if trapezoidal
                       ])
-        print('Max velocity is kept for:\t' + str(t_vmax))
         v_peak = t_acc * a_max  # maximum velocity reached during the movement
-        print('The maximum velocity is:\t' + str(v_peak))
         # Velocity values to send to the base.
         v_acc = np.linspace(0.0,
                             v_peak,
                             num = int(self._hz * t_acc),
                             endpoint = False
                             )
-        print(v_acc)
         v_const = [v_max] * (int(self._hz * t_vmax) - 1)
-        print(v_const)
         v_dec = np.linspace(v_peak,
                             0.0, 
                             num = int(self._hz * t_acc),
                             endpoint = True
                             )
-        print(v_dec)
         return np.concatenate((v_acc, v_const, v_dec))
 
 
@@ -134,9 +145,9 @@ if __name__ == '__main__':
     mr = MoveRobot()
     try:
         while not rospy.is_shutdown():
-            mr.ask_rotation()
-            mr.base_rotation()
-            #mr.ask_translation()
-            #mr.base_translation()
+            mr.ask_movement()
+            mr.move()
+    except KeyboardInterrupt:
+        rospy.loginfo('Shutting down the node.')
     except rospy.ROSInterruptException:
-        rospy.loginfo('Shutting down.')
+        rospy.loginfo('Shutting down the node.')
